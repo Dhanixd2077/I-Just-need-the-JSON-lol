@@ -1,290 +1,147 @@
 #include <Geode/Geode.hpp>
+#include <Geode/modify/FMODAudioEngine.hpp>
+#include <Geode/modify/PlayLayer.hpp>
+#include <cmath>
 
 using namespace geode::prelude;
 
-static std::string person = "";
-static int personAccountID = -1;
+// ==========================================
+// VARIABLES GLOBALES PARA CONTROL DE AUDIO
+// ==========================================
+FMOD::Channel* g_canalVoz = nullptr;
+FMOD::Channel* g_canalInstrumentos = nullptr;
+bool g_enDashOrb = false;
+float g_anguloDash = 0.0f;
 
-static constexpr bool isPerson(int accountID) {
-    return accountID == personAccountID;
-}
+// ==========================================
+// HOOK: CONFIGURACIÓN DE FMOD (DOLBY ATMOS)
+// ==========================================
+class $modify(MyFMODAudioEngine, FMODAudioEngine) {
+    bool init() {
+        if (!FMODAudioEngine::init()) return false;
 
-static void lowerString(std::string& str) {
-    for (auto& c : str) {
-        c = tolower(c);
-    }
-}
+        // Recuperar el sistema de FMOD nativo desde el motor de Geode
+        FMOD::System* system = m_system;
+        if (system) {
+            // Forzar salida de audio a 7.1 para que el mezclador de Dolby Atmos / Windows Sonic
+            // en el sistema operativo intercepte los canales de altura y profundidad.
+            system->setSoftwareFormat(48000, FMOD_SPEAKERMODE_7POINT1, 0);
 
-class UserGetter : public CCObject, public LevelManagerDelegate {
-public:
-    static UserGetter* create(const std::string& user) {
-        auto ret = new UserGetter;
-        ret->m_searchObject = GJSearchObject::create(SearchType::Users, user);
-        GameLevelManager::get()->m_levelManagerDelegate = ret;
-        GameLevelManager::get()->getUsers(ret->m_searchObject);
-        return ret;
-    }
-
-    virtual void loadLevelsFinished(cocos2d::CCArray* levels, char const* key) {
-        auto score = typeinfo_cast<GJUserScore*>(levels->objectAtIndex(0));
-        if (!score) {
-            invalidUser();
-            return;
+            // Inicializar las coordenadas del Oyente (Listener) en el centro de la cabeza
+            FMOD_VECTOR posOyente = { 0.0f, 0.0f, 0.0f };
+            FMOD_VECTOR velOyente = { 0.0f, 0.0f, 0.0f };
+            FMOD_VECTOR frenteOyente = { 0.0f, 0.0f, 1.0f }; // Mirando adelante (eje Z)
+            FMOD_VECTOR arribaOyente = { 0.0f, 1.0f, 0.0f }; // El techo (eje Y)
+            system->set3DListenerAttributes(0, &posOyente, &velOyente, &frenteOyente, &arribaOyente);
         }
-        log::info("Found {} [{}]", score->m_userName, score->m_accountID);
-        personAccountID = score->m_accountID;
-        this->release();
+        return true;
     }
 
-    virtual void loadLevelsFailed(char const* key) {
-        invalidUser();
-        this->release();
-    }
+    // Interceptamos la reproducción musical usando la estructura de strings compatible (gd::string)
+    void playMusic(gd::string path, bool loop, float fadeIn, int location) {
+        // Ejecutamos la carga base original del juego
+        FMODAudioEngine::playMusic(path, loop, fadeIn, location);
 
-    void invalidUser() {
-        log::info("Couldnt find {}", person);
-        Notification::create(fmt::format("[BAN SOMEONE MOD] Couldn't find {}!", person), NotificationIcon::Error)->show();
-        personAccountID = -1;
-    }
+        FMOD::System* system = m_system;
+        if (!system || !m_currentSound) return;
 
-protected:
-    Ref<GJSearchObject> m_searchObject = nullptr;
-};
+        FMOD::Sound* sonidoActual = m_currentSound;
+        FMOD::ChannelGroup* masterGroup = m_masterChannelGroup;
 
-$on_mod(Loaded) {
-    auto mod = Mod::get();
-
-    person = mod->getSettingValue<std::string>("person");
-    lowerString(person);
-    UserGetter::create(person);
-
-    listenForSettingChanges<std::string>("person", [](std::string v) {
-        lowerString(v);
-        person = v;
-        UserGetter::create(v);
-    });
-}
-
-#include <Geode/modify/ProfilePage.hpp>
-class $modify(ProfilePage) {
-
-    struct Fields {
-        bool isPerson = false;
-    };
-
-    void loadPersonProfile(int accountID) {
-        auto fields = m_fields.self();
-
-        if (!isPerson(accountID))
-            return;
-
-        fields->isPerson = true;
-
-        if (auto socialMenu = typeinfo_cast<CCMenu*>(m_mainLayer->getChildByID("socials-menu"))) {
-            socialMenu->setOpacity(20);
+        // Detenemos el canal original por defecto del juego para evitar eco plano
+        if (m_currentChannel) {
+            m_currentChannel->stop();
         }
 
-        if (auto socialHint = typeinfo_cast<CCSprite*>(m_mainLayer->getChildByID("my-stuff-hint"))) {
-            socialHint->setOpacity(20);
+        // REPRODUCCIÓN CANAL 1: Voz (Fija en el Centro)
+        system->playSound(sonidoActual, masterGroup, false, &g_canalVoz);
+        if (g_canalVoz) {
+            // Crear filtro Paso Banda (Pone énfasis en las frecuencias medias de voz humana)
+            FMOD::DSP* dspVoz;
+            system->createDSPByType(FMOD_DSP_TYPE_PARAMEQ, &dspVoz);
+            dspVoz->setParameterFloat(FMOD_DSP_PARAMEQ_CENTER, 1500.0f); // Rango de la voz
+            dspVoz->setParameterFloat(FMOD_DSP_PARAMEQ_BANDWIDTH, 2.0f);
+            g_canalVoz->addDSP(0, dspVoz);
+
+            // Bloquear en modo 2D plano justo en el centro matemático
+            g_canalVoz->setMode(FMOD_2D);
+            g_canalVoz->setPan(0.0f); 
         }
 
-        if (auto rankLabel = typeinfo_cast<CCLabelBMFont*>(m_mainLayer->getChildByID("global-rank-label"))) {
-            rankLabel->setString("like 1 billion");
-        }
+        // REPRODUCCIÓN CANAL 2: Instrumentos (Vuelo Atmosférico 3D)
+        system->playSound(sonidoActual, masterGroup, false, &g_canalInstrumentos);
+        if (g_canalInstrumentos) {
+            // Crear filtro Muesca para debilitar la voz en este canal y aislar instrumentos
+            FMOD::DSP* dspInstrumentos;
+            system->createDSPByType(FMOD_DSP_TYPE_PARAMEQ, &dspInstrumentos);
+            dspInstrumentos->setParameterFloat(FMOD_DSP_PARAMEQ_CENTER, 1500.0f);
+            dspInstrumentos->setParameterFloat(FMOD_DSP_PARAMEQ_GAIN, -15.0f); // Atenuar frecuencias de voz
+            g_canalInstrumentos->addDSP(0, dspInstrumentos);
 
-        auto statsMenu = typeinfo_cast<CCMenu*>(m_mainLayer->getChildByID("stats-menu"));
-        if (!statsMenu)
-            return;
-
-        float limitWidth = m_score->m_creatorPoints > 0 ? 50.f : 60.f;
-
-        if (auto starsLabel = typeinfo_cast<CCLabelBMFont*>(statsMenu->getChildByIDRecursive("stars-label"))) {
-            starsLabel->setString("2");
-            starsLabel->setColor({255, 0, 0});
-            starsLabel->limitLabelWidth(limitWidth, 0.6f, 0.f);
-            starsLabel->getParent()->setContentWidth(starsLabel->getScaledContentWidth());
-        }
-
-        if (auto moonsLabel = typeinfo_cast<CCLabelBMFont*>(statsMenu->getChildByIDRecursive("moons-label"))) {
-            moonsLabel->setString("7");
-            moonsLabel->setColor({255, 0, 0});
-            moonsLabel->limitLabelWidth(limitWidth, 0.6f, 0.f);
-            moonsLabel->getParent()->setContentWidth(moonsLabel->getScaledContentWidth());
-        }
-
-        if (auto gcoinsLabel = typeinfo_cast<CCLabelBMFont*>(statsMenu->getChildByIDRecursive("coins-label"))) {
-            gcoinsLabel->setString("-1");
-            gcoinsLabel->setColor({255, 0, 0});
-            gcoinsLabel->limitLabelWidth(limitWidth, 0.6f, 0.f);
-            gcoinsLabel->getParent()->setContentWidth(gcoinsLabel->getScaledContentWidth());
-        }
-
-        if (auto ucoinsLabel = typeinfo_cast<CCLabelBMFont*>(statsMenu->getChildByIDRecursive("user-coins-label"))) {
-            ucoinsLabel->setString("5");
-            ucoinsLabel->setColor({255, 0, 0});
-            ucoinsLabel->limitLabelWidth(limitWidth, 0.6f, 0.f);
-            ucoinsLabel->getParent()->setContentWidth(ucoinsLabel->getScaledContentWidth());
-        }
-
-        if (auto demonsLabel = typeinfo_cast<CCLabelBMFont*>(statsMenu->getChildByIDRecursive("demons-label"))) {
-            demonsLabel->setString("0");
-            demonsLabel->setColor({255, 0, 0});
-            demonsLabel->limitLabelWidth(limitWidth, 0.6f, 0.f);
-            demonsLabel->getParent()->setContentWidth(demonsLabel->getScaledContentWidth());
-        }
-
-        // 50.f 0.6f 0.f
-        if (auto creatorLabel = typeinfo_cast<CCLabelBMFont*>(statsMenu->getChildByIDRecursive("creator-points-label"))) {
-            creatorLabel->setString("-67");
-            creatorLabel->setColor({255, 0, 0});
-            creatorLabel->limitLabelWidth(limitWidth, 0.6f, 0.f);
-            creatorLabel->getParent()->setContentWidth(creatorLabel->getScaledContentWidth());
-        }
-
-        statsMenu->updateLayout();
-
-    }
-
-    void loadPageFromUserInfo(GJUserScore* score) {
-        ProfilePage::loadPageFromUserInfo(score);
-        loadPersonProfile(score->m_accountID);
-    }
-};
-
-#include <Geode/modify/CCLabelBMFont.hpp>
-class $modify(CCLabelBMFont) {
-    bool initWithString(const char *str, const char *fntFile, float width, CCTextAlignment alignment, CCPoint imageOffset) {
-        std::string newStr = str == nullptr ? "" : str;
-        replacePerson(newStr);
-        return CCLabelBMFont::initWithString(newStr.c_str(), fntFile, width, alignment, imageOffset);
-    }
-
-    void setString(const char *newString) {
-        std::string newStr = newString == nullptr ? "" : newString;
-        replacePerson(newStr);
-        CCLabelBMFont::setString(newStr.c_str());
-    }
-
-    void replacePerson(std::string& string) {
-        if (personAccountID <= 0)
-            return;
-
-        auto personLen = person.length();
-        if (personLen == 0)
-            return;
-
-        std::string lowered = string;
-        lowerString(lowered);
-
-        size_t pos = 0;
-        while ((pos = lowered.find(person, pos)) != std::string::npos) {
-            if (personLen > 2) {
-                string.replace(pos + 2, 2, "**");
-            } else {
-                string.replace(pos, 1, "*");
-            }
-            pos += personLen;
+            // Activar el procesamiento de posicionamiento 3D para este canal
+            g_canalInstrumentos->setMode(FMOD_3D | FMOD_3D_INVERSEROLLOFF);
+            g_canalInstrumentos->set3DMinMaxDistance(1.0f, 50.0f);
         }
     }
 };
 
-#include <Geode/modify/CommentCell.hpp>
-class $modify(CommentCell) {
-    void loadFromComment(GJComment* comment) {
-        CommentCell::loadFromComment(comment);
-        fixPersonValues();
-    }
-
-    void fixPersonValues() {
-        if (!isPerson(m_comment->m_accountID))
-            return;
-
-        if (m_comment->m_likeCount <= 0)
-            return;
-
-        int newLikeCount = 0 - m_comment->m_likeCount * ((rand() % 6) + 1);
-
-        if (m_likeLabel) {
-            m_likeLabel->setString(fmt::format("{}", newLikeCount).c_str());
-            m_likeLabel->limitLabelWidth(m_compactMode ? 15 : 28, m_compactMode ? 0.3f : 0.4f, 0.f);
-        }
-
-        auto newFrame = CCSpriteFrameCache::get()->spriteFrameByName("GJ_dislikesIcon_001.png");
-        m_iconSprite->setDisplayFrame(newFrame);
-    }
-
-    void updateLabelValues() {
-        CommentCell::updateLabelValues();
-        fixPersonValues();
-    }
-};
-
-#include <Geode/modify/LevelCell.hpp>
-class $modify(LevelCell) {
-    void loadCustomLevelCell() {
-        LevelCell::loadCustomLevelCell();
-        fixPersonValues();
-    }
-
-    void fixPersonValues() {
-        if (!isPerson(m_level->m_accountID))
-            return;
-
-        int likeRatio = m_level->m_likes - m_level->m_dislikes;
-
-        if (likeRatio <= 0)
-            return;
-
-        auto likeIcon = typeinfo_cast<CCSprite*>(m_mainLayer->getChildByID("likes-icon"));
-        if (!likeIcon)
-            return;
-
-        auto likeLabel = typeinfo_cast<CCLabelBMFont*>(m_mainLayer->getChildByID("likes-label"));
-        if (!likeLabel)
-            return;
-
-        auto diffSprite = typeinfo_cast<GJDifficultySprite*>(m_mainLayer->getChildByIDRecursive("difficulty-sprite"));
-        if (!diffSprite)
-            return;
-
-        auto likeStr = GameToolbox::intToShortString(0 - likeRatio);
-        likeLabel->setString(likeStr.c_str());
-        likeLabel->limitLabelWidth(45.f, m_compactView ? 0.3f : 0.4f, 0.f);
-
-        auto dislikeFrame = CCSpriteFrameCache::get()->spriteFrameByName("GJ_dislikesIcon_001.png");
-        likeIcon->setDisplayFrame(dislikeFrame);
-
-        diffSprite->updateFeatureState(GJFeatureState::None);
-    }
-};
-
-#include <Geode/modify/LevelInfoLayer.hpp>
-class $modify(LevelInfoLayer) {
-    struct Fields {
-        bool tryingToEnterStupidChudPersonLevel = false;
-    };
-
-    void updateLabelValues() {
-        LevelInfoLayer::updateLabelValues();
-        fixPersonValues();
-    }
-
-    void fixPersonValues() {
-        if (!isPerson(m_level->m_accountID))
-            return;
-
-        int likeRatio = m_level->m_likes - m_level->m_dislikes;
-
-        if (likeRatio <= 0)
-            return;
+// ==========================================
+// HOOK: GAMEPLAY (REACCIÓN AL CUBO Y ORBES)
+// ==========================================
+class $modify(MyPlayLayer, PlayLayer) {
+    
+    // Capturar cuando el jugador interactúa con objetos (Orbes)
+    void playerActivatedObject(PlayerObject* player, PlayerButtonCommand command) {
+        PlayLayer::playerActivatedObject(player, command);
         
-        auto likeStr = GameToolbox::pointsToString(0 - likeRatio);
-        m_likesLabel->setString(likeStr.c_str());
-        m_likesLabel->limitLabelWidth(60.f, 0.5f, 0.f);
+        // m_isDashing determina si el jugador está propulsado por una Dash Orb en la 2.2
+        if (player && player->m_isDashing && !g_enDashOrb) {
+            g_enDashOrb = true;
+            g_anguloDash = 0.0f; // Inicializar ángulo de la rotación espacial
+        }
+    }
 
-        auto dislikeFrame = CCSpriteFrameCache::get()->spriteFrameByName("GJ_dislikesIcon_001.png");
-        m_likesIcon->setDisplayFrame(dislikeFrame);
+    // Bucle principal frame a frame durante el nivel
+    void update(float dt) {
+        PlayLayer::update(dt);
 
-        m_difficultySprite->updateFeatureState(GJFeatureState::None);
+        if (!g_canalInstrumentos || !m_player1) return;
+
+        FMOD_VECTOR posInstrumentos = { 0.0f, 0.0f, 0.0f };
+        FMOD_VECTOR velocidad = { 0.0f, 0.0f, 0.0f };
+
+        // 1. COMPORTAMIENTO EFECTO DASH ORB (GIRO CINEMÁTICO 360)
+        if (g_enDashOrb) {
+            g_anguloDash += dt * 10.0f; // Velocidad del giro alrededor de la cabeza
+
+            posInstrumentos.x = std::sin(g_anguloDash) * 12.0f; // Lados
+            posInstrumentos.y = 2.0f;                           // Elevación
+            posInstrumentos.z = std::cos(g_anguloDash) * 12.0f; // Profundidad (Adelante/Atrás)
+
+            if (g_anguloDash >= 6.28f) { // Una vuelta completa en radianes (~2*PI)
+                g_enDashOrb = false;
+            }
+        } 
+        // 2. COMPORTAMIENTO DINÁMICO NORMAL (SEGUIMIENTO AL CUBO)
+        else {
+            float cuboY = m_player1->getPositionY();
+            bool vaEnReversa = m_bIsGoingBackward; // Detecta portales espejo y mecánicas de reversa nativas
+
+            // Reducimos la escala de Y para mapearla fluidamente al espacio envolvente de FMOD
+            float alturaEscalada = (cuboY - 105.0f) / 35.0f; 
+            
+            posInstrumentos.x = 0.0f;            
+            posInstrumentos.y = alturaEscalada;  // Eje vertical sigue al icono
+
+            // Invertir profundidad según la dirección del Gameplay (Normal vs Reversa)
+            if (vaEnReversa) {
+                posInstrumentos.z = -7.0f; // Mandar música atrás si va a la izquierda
+            } else {
+                posInstrumentos.z = 7.0f;  // Colocar música al frente si va a la derecha
+            }
+        }
+
+        // Aplicar coordenadas calculadas al canal de instrumentos en el mezclador del SO
+        g_canalInstrumentos->set3DAttributes(&posInstrumentos, &velocidad);
     }
 };
