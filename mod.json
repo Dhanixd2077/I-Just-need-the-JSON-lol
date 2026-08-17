@@ -6,26 +6,13 @@
 		"mac": "2.2081",
 		"ios": "2.2081"
 	},
-	"id": "capeling.ban-someone-mod",
-	"name": "THE BAN SOMEONE MOD",
+	"id": "dhani.dolby-atmos-mod",
+	"name": "Dolby Atmos",
 	"version": "v1.0.0",
-	"developer": "capeling",
-	"description": "BAN THEM",
+	"developer": "Justin Kid",
+	"description": "bang",
 	"dependencies": {
 		"geode.node-ids": ">=v1.20.0"
-	},
-	"tags": [
-		"joke"
-	],
-	"links": {
-		"source": "https://github.com/capeling/ban-someone"
-	},
-	"settings": {
-		"person": {
-			"name": "PERSON TO BAN",
-			"description": "person to ban",
-			"type": "string",
-			"default": "capeling"
 		}
 	}
 }
