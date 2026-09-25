@@ -6,12 +6,33 @@
 
 using namespace geode::prelude;
 
-float g_zoomMax = 1.0f;[cite: 1]
-float g_bassIntensity = 0.9f;[cite: 1]
-float g_shakeIntensity = 12.0f;[cite: 1]
+float g_zoomMax = 1.0f;
+float g_bassIntensity = 0.9f;
+float g_shakeIntensity = 12.0f;
 int g_shaderMode = 0; // 0 = Desactivado, 1 = Bulge
 
-// Shader Fragment GLSL para el efecto Bulge
+// Vertex Shader explícito para evitar fallos de enlace
+const GLchar* defaultVert = R"(
+    attribute vec4 a_position;
+    attribute vec2 a_texCoord;
+    attribute vec4 a_color;
+
+    #ifdef GL_ES
+    varying lowp vec4 v_fragmentColor;
+    varying mediump vec2 v_texCoord;
+    #else
+    varying vec4 v_fragmentColor;
+    varying vec2 v_texCoord;
+    #endif
+
+    void main() {
+        gl_Position = CC_PMatrix * a_position;
+        v_fragmentColor = a_color;
+        v_texCoord = a_texCoord;
+    }
+)";
+
+// Fragment Shader para el efecto Bulge
 const GLchar* bulgeFrag = R"(
     #ifdef GL_ES
     precision mediump float;
@@ -37,51 +58,50 @@ const GLchar* bulgeFrag = R"(
     }
 )";
 
-class MySettingsLayer : public FLAlertLayer {[cite: 1]
-    TextInput* m_zoomInput;[cite: 1]
-    TextInput* m_intensityInput;[cite: 1]
-    TextInput* m_shakeInput;[cite: 1]
-    TextInput* m_shaderInput;
+class MySettingsLayer : public FLAlertLayer {
+    TextInput* m_zoomInput = nullptr;
+    TextInput* m_intensityInput = nullptr;
+    TextInput* m_shakeInput = nullptr;
+    TextInput* m_shaderInput = nullptr;
 
 public:
-    static MySettingsLayer* create() {[cite: 1]
-        auto ret = new MySettingsLayer();[cite: 1]
-        if (ret && ret->init(150)) {[cite: 1]
-            ret->autorelease();[cite: 1]
-            return ret;[cite: 1]
+    static MySettingsLayer* create() {
+        auto ret = new MySettingsLayer();
+        if (ret && ret->init(150)) {
+            ret->autorelease();
+            return ret;
         }
-        CC_SAFE_DELETE(ret);[cite: 1]
-        return nullptr;[cite: 1]
+        CC_SAFE_DELETE(ret);
+        return nullptr;
     }
 
-    bool init(int bgOpacity) {[cite: 1]
-        if (!FLAlertLayer::init(bgOpacity)) return false;[cite: 1]
+    bool init(int bgOpacity) {
+        if (!FLAlertLayer::init(bgOpacity)) return false;
 
-        auto winSize = CCDirector::sharedDirector()->getWinSize();[cite: 1]
+        auto winSize = CCDirector::sharedDirector()->getWinSize();
         
-        auto bg = CCScale9Sprite::create("GJ_square04.png");[cite: 1]
-        bg->setContentSize({ 280, 290 });[cite: 1]
-        bg->setPosition(winSize / 2);[cite: 1]
-        m_mainLayer->addChild(bg);[cite: 1]
+        auto bg = CCScale9Sprite::create("GJ_square04.png");
+        bg->setContentSize({ 280, 290 });
+        bg->setPosition(winSize / 2);
+        m_mainLayer->addChild(bg);
 
-        m_buttonMenu = CCMenu::create();[cite: 1]
-        m_mainLayer->addChild(m_buttonMenu);[cite: 1]
+        m_buttonMenu = CCMenu::create();
+        m_mainLayer->addChild(m_buttonMenu);
 
-        auto title = CCLabelBMFont::create("Settings", "goldFont.fnt");[cite: 1]
-        title->setPosition({ winSize.width / 2, winSize.height / 2 + 120 });[cite: 1]
-        title->setScale(0.7f);[cite: 1]
-        m_mainLayer->addChild(title);[cite: 1]
+        auto title = CCLabelBMFont::create("Settings", "goldFont.fnt");
+        title->setPosition({ winSize.width / 2, winSize.height / 2 + 120 });
+        title->setScale(0.7f);
+        m_mainLayer->addChild(title);
 
-        g_zoomMax = Mod::get()->getSavedValue<float>("save_zoom", 1.0f);[cite: 1]
-        g_bassIntensity = Mod::get()->getSavedValue<float>("save_intensity", 0.9f);[cite: 1]
-        g_shakeIntensity = Mod::get()->getSavedValue<float>("save_shake", 12.0f);[cite: 1]
-        g_shaderMode = Mod::get()->getSavedValue<int64_t>("save_shader_mode", 0);
+        g_zoomMax = Mod::get()->getSavedValue<float>("save_zoom", 1.0f);
+        g_bassIntensity = Mod::get()->getSavedValue<float>("save_intensity", 0.9f);
+        g_shakeIntensity = Mod::get()->getSavedValue<float>("save_shake", 12.0f);
+        g_shaderMode = static_cast<int>(Mod::get()->getSavedValue<int64_t>("save_shader_mode", 0));
 
-        m_zoomInput = createInput("Zoom", 75, g_zoomMax, "save_zoom", &g_zoomMax);[cite: 1]
-        m_intensityInput = createInput("Intensity", 25, g_bassIntensity, "save_intensity", &g_bassIntensity);[cite: 1]
-        m_shakeInput = createInput("Shake", -25, g_shakeIntensity, "save_shake", &g_shakeIntensity);[cite: 1]
+        m_zoomInput = createInput("Zoom", 75, g_zoomMax, "save_zoom", &g_zoomMax);
+        m_intensityInput = createInput("Intensity", 25, g_bassIntensity, "save_intensity", &g_bassIntensity);
+        m_shakeInput = createInput("Shake", -25, g_shakeIntensity, "save_shake", &g_shakeIntensity);
 
-        // Input para cambiar el shader (0 = Apagado, 1 = Bulge)
         auto shaderLabel = CCLabelBMFont::create("Shader (0=Off, 1=Bulge)", "bigFont.fnt");
         shaderLabel->setScale(0.35f);
         shaderLabel->setPosition({0, -50});
@@ -101,105 +121,104 @@ public:
         });
         m_buttonMenu->addChild(m_shaderInput);
 
-        auto closeBtn = CCMenuItemSpriteExtra::create([cite: 1]
-            CCSprite::createWithSpriteFrameName("GJ_closeBtn_001.png"),[cite: 1]
-            this, menu_selector(MySettingsLayer::onClose));[cite: 1]
-        closeBtn->setPosition({ -130, 130 });[cite: 1]
-        m_buttonMenu->addChild(closeBtn);[cite: 1]
+        auto closeBtn = CCMenuItemSpriteExtra::create(
+            CCSprite::createWithSpriteFrameName("GJ_closeBtn_001.png"),
+            this, menu_selector(MySettingsLayer::onClose));
+        closeBtn->setPosition({ -130, 130 });
+        m_buttonMenu->addChild(closeBtn);
 
-        auto infoBtn = CCMenuItemSpriteExtra::create([cite: 1]
-            CCSprite::createWithSpriteFrameName("GJ_infoIcon_001.png"),[cite: 1]
-            this, menu_selector(MySettingsLayer::onInfo));[cite: 1]
-        infoBtn->setPosition({ 130, 130 });[cite: 1]
-        m_buttonMenu->addChild(infoBtn);[cite: 1]
+        auto infoBtn = CCMenuItemSpriteExtra::create(
+            CCSprite::createWithSpriteFrameName("GJ_infoIcon_001.png"),
+            this, menu_selector(MySettingsLayer::onInfo));
+        infoBtn->setPosition({ 130, 130 });
+        m_buttonMenu->addChild(infoBtn);
 
-        this->setTouchEnabled(true);[cite: 1]
-        this->setKeypadEnabled(true);[cite: 1]
-        return true;[cite: 1]
+        this->setTouchEnabled(true);
+        this->setKeypadEnabled(true);
+        return true;
     }
 
-    TextInput* createInput(const char* labelStr, float y, float initialVal, std::string saveKey, float* globalVar) {[cite: 1]
-        auto label = CCLabelBMFont::create(labelStr, "bigFont.fnt");[cite: 1]
-        label->setScale(0.4f);[cite: 1]
-        label->setPosition({0, y + 22});[cite: 1]
-        m_buttonMenu->addChild(label);[cite: 1]
+    TextInput* createInput(const char* labelStr, float y, float initialVal, std::string saveKey, float* globalVar) {
+        auto label = CCLabelBMFont::create(labelStr, "bigFont.fnt");
+        label->setScale(0.4f);
+        label->setPosition({0, y + 22});
+        m_buttonMenu->addChild(label);
 
-        auto input = TextInput::create(100.f, labelStr, "chatFont.fnt");[cite: 1]
-        input->setFilter("0123456789.");[cite: 1]
+        auto input = TextInput::create(100.f, labelStr, "chatFont.fnt");
+        input->setFilter("0123456789.");
         
-        std::stringstream ss;[cite: 1]
-        ss << std::fixed << std::setprecision(2) << initialVal;[cite: 1]
-        input->setString(ss.str());[cite: 1]
+        std::stringstream ss;
+        ss << std::fixed << std::setprecision(2) << initialVal;
+        input->setString(ss.str());
         
-        input->setPosition({0, y});[cite: 1]
+        input->setPosition({0, y});
         
-        input->setCallback([saveKey, globalVar](const std::string& text) {[cite: 1]
-            if (text.empty()) return;[cite: 1]
-            try {[cite: 1]
-                float val = std::stof(text);[cite: 1]
-                *globalVar = val;[cite: 1]
-                Mod::get()->setSavedValue(saveKey, val);[cite: 1]
-            } catch(...) {}[cite: 1]
-        });[cite: 1]
+        input->setCallback([saveKey, globalVar](const std::string& text) {
+            if (text.empty()) return;
+            try {
+                float val = std::stof(text);
+                *globalVar = val;
+                Mod::get()->setSavedValue(saveKey, val);
+            } catch(...) {}
+        });
 
-        m_buttonMenu->addChild(input);[cite: 1]
-        return input;[cite: 1]
+        m_buttonMenu->addChild(input);
+        return input;
     }
 
-    void onInfo(CCObject*) {[cite: 1]
-        FLAlertLayer::create([cite: 1]
-            "Help",[cite: 1]
-            "<cy>Original Code by:</c> <cr>thesillydoggo</c> and <cp>EryManthus</c> luv for them <3!\n\n"[cite: 1]
-            "<cg>Zoom:</c> How much the background scales with music.\n"[cite: 1]
-            "<cg>Intensity:</c> Bass sensitivity.\n"[cite: 1]
-            "<cg>Shake:</c> Background vibration.\n"[cite: 1]
+    void onInfo(CCObject*) {
+        FLAlertLayer::create(
+            "Help",
+            "<cy>Original Code by:</c> <cr>thesillydoggo</c> and <cp>EryManthus</c> luv for them <3!\n\n"
+            "<cg>Zoom:</c> How much the background scales with music.\n"
+            "<cg>Intensity:</c> Bass sensitivity.\n"
+            "<cg>Shake:</c> Background vibration.\n"
             "<cg>Shader:</c> 0 = Off, 1 = Bulge Effect.\n\n"
-            "<cy>PC:</c> Type with keyboard | <cg>Mobile:</c> Tap to type.",[cite: 1]
-            "OK"[cite: 1]
-        )->show();[cite: 1]
+            "<cy>PC:</c> Type with keyboard | <cg>Mobile:</c> Tap to type.",
+            "OK"
+        )->show();
     }
     
-    void onClose(CCObject*) { this->removeFromParentAndCleanup(true); }[cite: 1]
-    void keyBackClicked() override { onClose(nullptr); }[cite: 1]
+    void onClose(CCObject*) { this->removeFromParentAndCleanup(true); }
+    void keyBackClicked() override { onClose(nullptr); }
 };
 
-class BGPulsingNode : public CCNode {[cite: 1]
+class BGPulsingNode : public CCNode {
 public:
-    CCSprite* bg = nullptr;[cite: 1]
-    FMOD::DSP* fftDSP = nullptr;[cite: 1]
-    float smoothBass = 0.0f;[cite: 1]
-    float baseScale = 1.0f;[cite: 1]
-    CCPoint basePos;[cite: 1]
+    CCSprite* bg = nullptr;
+    FMOD::DSP* fftDSP = nullptr;
+    float smoothBass = 0.0f;
+    float baseScale = 1.0f;
+    CCPoint basePos;
     CCGLProgram* shaderProgram = nullptr;
 
-    static BGPulsingNode* create(CCSprite* bg) {[cite: 1]
-        auto ret = new BGPulsingNode();[cite: 1]
-        if (ret && ret->init(bg)) {[cite: 1]
-            ret->autorelease();[cite: 1]
-            return ret;[cite: 1]
+    static BGPulsingNode* create(CCSprite* bg) {
+        auto ret = new BGPulsingNode();
+        if (ret && ret->init(bg)) {
+            ret->autorelease();
+            return ret;
         }
-        CC_SAFE_DELETE(ret);[cite: 1]
-        return nullptr;[cite: 1]
+        CC_SAFE_DELETE(ret);
+        return nullptr;
     }
 
-    bool init(CCSprite* target) {[cite: 1]
-        if (!CCNode::init()) return false;[cite: 1]
-        bg = target;[cite: 1]
-        baseScale = bg->getScale();[cite: 1]
-        basePos = bg->getPosition();[cite: 1]
+    bool init(CCSprite* target) {
+        if (!CCNode::init()) return false;
+        bg = target;
+        baseScale = bg->getScale();
+        basePos = bg->getPosition();
 
-        auto engine = FMODAudioEngine::sharedEngine();[cite: 1]
-        auto sys = engine->m_system;[cite: 1]
-        FMOD::ChannelGroup* master = nullptr;[cite: 1]
-        sys->getMasterChannelGroup(&master);[cite: 1]
-        sys->createDSPByType(FMOD_DSP_TYPE_FFT, &fftDSP);[cite: 1]
-        fftDSP->setParameterInt(FMOD_DSP_FFT_WINDOWSIZE, 512);[cite: 1]
-        master->addDSP(0, fftDSP);[cite: 1]
+        auto engine = FMODAudioEngine::sharedEngine();
+        auto sys = engine->m_system;
+        FMOD::ChannelGroup* master = nullptr;
+        sys->getMasterChannelGroup(&master);
+        sys->createDSPByType(FMOD_DSP_TYPE_FFT, &fftDSP);
+        fftDSP->setParameterInt(FMOD_DSP_FFT_WINDOWSIZE, 512);
+        master->addDSP(0, fftDSP);
 
-        // Inicializar shader de Bulge si la opción 1 está activa
         if (g_shaderMode == 1) {
             shaderProgram = new CCGLProgram();
-            shaderProgram->initWithVertexShaderByteArray(ccPositionTextureColor_vert, bulgeFrag);
+            shaderProgram->initWithVertexShaderByteArray(defaultVert, bulgeFrag);
             shaderProgram->addAttribute(kCCAttributeNamePosition, kCCVertexAttrib_Position);
             shaderProgram->addAttribute(kCCAttributeNameColor, kCCVertexAttrib_Color);
             shaderProgram->addAttribute(kCCAttributeNameTexCoord, kCCVertexAttrib_TexCoords);
@@ -208,70 +227,71 @@ public:
             bg->setShaderProgram(shaderProgram);
         }
 
-        scheduleUpdate();[cite: 1]
-        return true;[cite: 1]
+        scheduleUpdate();
+        return true;
     }
 
-    void update(float dt) override {[cite: 1]
-        if (!fftDSP || !bg) return;[cite: 1]
+    void update(float dt) override {
+        if (!fftDSP || !bg) return;
         
-        FMOD_DSP_PARAMETER_FFT* fft = nullptr;[cite: 1]
-        fftDSP->getParameterData(FMOD_DSP_FFT_SPECTRUMDATA, (void**)&fft, nullptr, nullptr, 0);[cite: 1]
+        FMOD_DSP_PARAMETER_FFT* fft = nullptr;
+        fftDSP->getParameterData(FMOD_DSP_FFT_SPECTRUMDATA, (void**)&fft, nullptr, nullptr, 0);
 
-        float bass = 0.0f;[cite: 1]
-        if (fft && fft->numchannels > 0 && fft->spectrum[0]) {[cite: 1]
-            for (int i = 0; i < 8; i++) bass += fft->spectrum[0][i];[cite: 1]
-            bass /= 8;[cite: 1]
+        float bass = 0.0f;
+        if (fft && fft->numchannels > 0 && fft->spectrum[0]) {
+            for (int i = 0; i < 8; i++) bass += fft->spectrum[0][i];
+            bass /= 8;
         }
-        smoothBass += (bass - smoothBass) * dt * 14.0f;[cite: 1]
+        smoothBass += (bass - smoothBass) * dt * 14.0f;
 
-        float currentBassValue = smoothBass * g_bassIntensity;[cite: 1]
-        bg->setScale(baseScale * (1.0f + (currentBassValue * g_zoomMax)));[cite: 1]
+        float currentBassValue = smoothBass * g_bassIntensity;
+        bg->setScale(baseScale * (1.0f + (currentBassValue * g_zoomMax)));
         
-        float shake = currentBassValue * g_shakeIntensity;[cite: 1]
-        bg->setPosition({[cite: 1]
-            basePos.x + CCRANDOM_MINUS1_1() * shake,[cite: 1]
-            basePos.y + CCRANDOM_MINUS1_1() * shake[cite: 1]
-        });[cite: 1]
+        float shake = currentBassValue * g_shakeIntensity;
+        bg->setPosition({ 
+            basePos.x + CCRANDOM_MINUS1_1() * shake, 
+            basePos.y + CCRANDOM_MINUS1_1() * shake 
+        });
 
-        // Pasar la intensidad de los bajos al Shader en cada cuadro
+        // Métodos nativos de Cocos2d-x para pasar uniforms al shader
         if (g_shaderMode == 1 && shaderProgram) {
             shaderProgram->use();
-            GLuint intensityLoc = glGetUniformLocation(shaderProgram->getProgram(), "u_bassIntensity");
-            glUniform1f(intensityLoc, currentBassValue);
+            shaderProgram->setUniformsForBuiltins();
+            GLint intensityLoc = shaderProgram->getUniformLocationForName("u_bassIntensity");
+            shaderProgram->setUniformLocationWith1f(intensityLoc, currentBassValue);
         }
     }
 
     ~BGPulsingNode() { 
-        if (fftDSP) fftDSP->release();[cite: 1]
+        if (fftDSP) fftDSP->release(); 
         if (shaderProgram) shaderProgram->release();
     }
 };
 
-class $modify(MyMenuLayer, MenuLayer) {[cite: 1]
-    bool init() {[cite: 1]
-        if (!MenuLayer::init()) return false;[cite: 1]
+class $modify(MyMenuLayer, MenuLayer) {
+    bool init() {
+        if (!MenuLayer::init()) return false;
 
-        g_zoomMax = Mod::get()->getSavedValue<float>("save_zoom", 1.0f);[cite: 1]
-        g_bassIntensity = Mod::get()->getSavedValue<float>("save_intensity", 0.9f);[cite: 1]
-        g_shakeIntensity = Mod::get()->getSavedValue<float>("save_shake", 12.0f);[cite: 1]
-        g_shaderMode = Mod::get()->getSavedValue<int64_t>("save_shader_mode", 0);
+        g_zoomMax = Mod::get()->getSavedValue<float>("save_zoom", 1.0f);
+        g_bassIntensity = Mod::get()->getSavedValue<float>("save_intensity", 0.9f);
+        g_shakeIntensity = Mod::get()->getSavedValue<float>("save_shake", 12.0f);
+        g_shaderMode = static_cast<int>(Mod::get()->getSavedValue<int64_t>("save_shader_mode", 0));
 
-        auto bg = static_cast<CCSprite*>(this->getChildByID("main-menu-bg"));[cite: 1]
-        if (bg) this->addChild(BGPulsingNode::create(bg), -1);[cite: 1]
+        auto bg = static_cast<CCSprite*>(this->getChildByID("main-menu-bg"));
+        if (bg) this->addChild(BGPulsingNode::create(bg), -1);
 
-        if (auto bottomMenu = this->getChildByID("bottom-menu")) {[cite: 1]
-            auto sprite = CCSprite::createWithSpriteFrameName("GJ_optionsBtn02_001.png");[cite: 1]
-            auto btn = CCMenuItemSpriteExtra::create([cite: 1]
-                sprite, this, menu_selector(MyMenuLayer::onCustomSettings)[cite: 1]
-            );[cite: 1]
-            bottomMenu->addChild(btn);[cite: 1]
-            bottomMenu->updateLayout();[cite: 1]
+        if (auto bottomMenu = this->getChildByID("bottom-menu")) {
+            auto sprite = CCSprite::createWithSpriteFrameName("GJ_optionsBtn02_001.png");
+            auto btn = CCMenuItemSpriteExtra::create(
+                sprite, this, menu_selector(MyMenuLayer::onCustomSettings)
+            );
+            bottomMenu->addChild(btn);
+            bottomMenu->updateLayout();
         }
-        return true;[cite: 1]
+        return true;
     }
 
-    void onCustomSettings(CCObject* sender) {[cite: 1]
-        MySettingsLayer::create()->show();[cite: 1]
+    void onCustomSettings(CCObject* sender) {
+        MySettingsLayer::create()->show();
     }
 };
